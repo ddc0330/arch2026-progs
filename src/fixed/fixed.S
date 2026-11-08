@@ -60,11 +60,10 @@ op3_asm:
 
 
     # ------------------------------------------------
-    # q_mul: Q11.20 multiplication - Baseline
+    # q_mul: Q11.20 multiplication - Optimization V1
     #
-    # (signed_a * signed_b + 2^19) >> 20
-    #
-    # RV32I shift-and-add 64-bit multiplication.
+    # 32-bit x 32-bit -> 64-bit
+    # RV32I shift-and-add
     # ------------------------------------------------
     .globl  q_mul_asm
     .type   q_mul_asm, @function
@@ -101,21 +100,18 @@ q_mul_asm:
     andi    t5, a1, 1
     beq     t5, zero, .Lqmul_skip_add
 
-    # Add multiplicand to accumulator.
-    add     t6, t1, a0
-    sltu    t5, t6, t1
+    # Optimization V1:
+    # Write the low-word result directly to t1.
+    add     t1, t1, a0
+    sltu    t5, t1, a0
 
+    # Add high word and carry.
     add     t2, t2, t0
     add     t2, t2, t5
 
-    addi    t1, t6, 0
-
 .Lqmul_skip_add:
 
-    # Correct 64-bit left shift.
-    # New high = (high << 1) | (low >> 31)
-    # New low  = low << 1
-
+    # Shift 64-bit multiplicand left.
     srli    t6, a0, 31
     slli    a0, a0, 1
     slli    t0, t0, 1
@@ -128,13 +124,9 @@ q_mul_asm:
     addi    t4, t4, -1
     bne     t4, zero, .Lqmul_loop
 
-    # ------------------------------------------------
     # Restore product sign.
-    # ------------------------------------------------
-
     beq     t3, zero, .Lqmul_round
 
-    # Two's complement negation of t2:t1.
     xori    t1, t1, -1
     xori    t2, t2, -1
 
@@ -144,7 +136,7 @@ q_mul_asm:
 
 .Lqmul_round:
 
-    # Add rounding bias: 2^19 = 0x00080000.
+    # Add rounding bias: 2^19.
     lui     t5, 0x80
 
     add     t6, t1, t5
@@ -153,7 +145,7 @@ q_mul_asm:
     addi    t1, t6, 0
     add     t2, t2, t5
 
-    # Extract bits [51:20] of 64-bit result.
+    # Extract bits [51:20].
     srli    a0, t1, 20
     slli    t2, t2, 12
     or      a0, a0, t2
