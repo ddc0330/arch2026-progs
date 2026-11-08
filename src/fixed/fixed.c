@@ -16,9 +16,7 @@ uint32_t op2(uint32_t a, uint32_t b)
 
 uint32_t op3(uint32_t a, uint32_t b)
 {
-    (void) a;
-    (void) b;
-    return 0;
+    return (a & b) + ((a ^ b) >> 1);
 }
 
 int32_t q_mul(int32_t a, int32_t b)
