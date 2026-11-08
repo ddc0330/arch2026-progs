@@ -123,6 +123,62 @@ uint16_t bf16_mul(uint16_t a, uint16_t b)
 
 uint16_t bf16_sqrt(uint16_t a)
 {
-    (void) a;
-    return 0;
+    uint32_t sign = a & 0x8000u;
+    uint32_t exponent = (a >> 7) & 0xFFu;
+    uint32_t fraction = a & 0x7Fu;
+
+    /* Handle NaN and infinity. */
+    if (exponent == 0xFFu) {
+        if (fraction != 0)
+            return a;
+
+        return sign ? 0x7FC0u : a;
+    }
+
+    /* Both positive and negative zero return positive zero. */
+    if ((a & 0x7FFFu) == 0)
+        return 0;
+
+    /* Negative nonzero values return quiet NaN. */
+    if (sign != 0)
+        return 0x7FC0u;
+
+    /* Positive denormals return zero. */
+    if (exponent == 0)
+        return 0;
+
+    /* Extract significand and unbiased exponent. */
+    int32_t e = (int32_t) exponent - 127;
+    uint32_t m = 128u + fraction;
+
+    /* Make the exponent even. */
+    if (e % 2 != 0) {
+        m <<= 1;
+        e--;
+    }
+
+    /* Binary search for the integer square root. */
+    uint32_t low = 90;
+    uint32_t high = 256;
+
+    while (low < high) {
+        uint32_t mid = (low + high + 1u) >> 1;
+
+        if ((mid * mid) / 128u <= m)
+            low = mid;
+        else
+            high = mid - 1u;
+    }
+
+    /* Calculate output exponent. */
+    int32_t result_exp = e / 2 + 127;
+
+    if (result_exp >= 255)
+        return 0x7F80u;
+
+    if (result_exp <= 0)
+        return 0;
+
+    /* Assemble BF16 result. */
+    return (uint16_t) (((uint32_t) result_exp << 7) | (low & 0x7Fu));
 }
