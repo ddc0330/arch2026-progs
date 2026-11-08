@@ -11,9 +11,7 @@ uint32_t op1(uint32_t a, uint32_t b, int *n)
 
 uint32_t op2(uint32_t a, uint32_t b)
 {
-    (void) a;
-    (void) b;
-    return 0;
+    return a - b;
 }
 
 uint32_t op3(uint32_t a, uint32_t b)
