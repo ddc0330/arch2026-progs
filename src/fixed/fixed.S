@@ -4,7 +4,7 @@
     .text
 
     # ------------------------------------------------
-    # op1: Bitwise Adder - Optimization V2
+    # op1: Bitwise Adder
     # ------------------------------------------------
     .globl  op1_asm
     .type   op1_asm, @function
@@ -60,10 +60,10 @@ op3_asm:
 
 
     # ------------------------------------------------
-    # q_mul: Q11.20 multiplication - Optimization V1
+    # q_mul: Q11.20 multiplication - Optimization V2
     #
-    # 32-bit x 32-bit -> 64-bit
-    # RV32I shift-and-add
+    # RV32I 64-bit shift-and-add
+    # Loop unrolling by 2
     # ------------------------------------------------
     .globl  q_mul_asm
     .type   q_mul_asm, @function
@@ -91,27 +91,27 @@ q_mul_asm:
     addi    t1, zero, 0
     addi    t2, zero, 0
 
-    # Process 32 multiplier bits.
-    addi    t4, zero, 32
+    # 16 iterations, processing 2 bits per iteration.
+    addi    t4, zero, 16
 
 .Lqmul_loop:
 
-    # Check the lowest multiplier bit.
-    andi    t5, a1, 1
-    beq     t5, zero, .Lqmul_skip_add
+    # ------------------------------------------------
+    # First bit
+    # ------------------------------------------------
 
-    # Optimization V1:
-    # Write the low-word result directly to t1.
+    andi    t5, a1, 1
+    beq     t5, zero, .Lqmul_skip_add0
+
+    # Add 64-bit multiplicand to accumulator.
     add     t1, t1, a0
     sltu    t5, t1, a0
-
-    # Add high word and carry.
     add     t2, t2, t0
     add     t2, t2, t5
 
-.Lqmul_skip_add:
+.Lqmul_skip_add0:
 
-    # Shift 64-bit multiplicand left.
+    # Shift multiplicand left by one.
     srli    t6, a0, 31
     slli    a0, a0, 1
     slli    t0, t0, 1
@@ -120,11 +120,44 @@ q_mul_asm:
     # Shift multiplier right.
     srli    a1, a1, 1
 
-    # Decrement loop counter.
+
+    # ------------------------------------------------
+    # Second bit
+    # ------------------------------------------------
+
+    andi    t5, a1, 1
+    beq     t5, zero, .Lqmul_skip_add1
+
+    # Add 64-bit multiplicand to accumulator.
+    add     t1, t1, a0
+    sltu    t5, t1, a0
+    add     t2, t2, t0
+    add     t2, t2, t5
+
+.Lqmul_skip_add1:
+
+    # Shift multiplicand left by one.
+    srli    t6, a0, 31
+    slli    a0, a0, 1
+    slli    t0, t0, 1
+    or      t0, t0, t6
+
+    # Shift multiplier right.
+    srli    a1, a1, 1
+
+
+    # ------------------------------------------------
+    # Loop control
+    # ------------------------------------------------
+
     addi    t4, t4, -1
     bne     t4, zero, .Lqmul_loop
 
+
+    # ------------------------------------------------
     # Restore product sign.
+    # ------------------------------------------------
+
     beq     t3, zero, .Lqmul_round
 
     xori    t1, t1, -1
@@ -133,6 +166,7 @@ q_mul_asm:
     addi    t1, t1, 1
     sltiu   t5, t1, 1
     add     t2, t2, t5
+
 
 .Lqmul_round:
 
