@@ -60,10 +60,10 @@ op3_asm:
 
 
     # ------------------------------------------------
-    # q_mul: Q11.20 multiplication - Optimization V2
+    # q_mul: Q11.20 multiplication - Optimization V3
     #
     # RV32I 64-bit shift-and-add
-    # Loop unrolling by 2
+    # Loop unrolling by 4
     # ------------------------------------------------
     .globl  q_mul_asm
     .type   q_mul_asm, @function
@@ -91,8 +91,8 @@ q_mul_asm:
     addi    t1, zero, 0
     addi    t2, zero, 0
 
-    # 16 iterations, processing 2 bits per iteration.
-    addi    t4, zero, 16
+    # 8 iterations, processing 4 bits per iteration.
+    addi    t4, zero, 8
 
 .Lqmul_loop:
 
@@ -103,7 +103,6 @@ q_mul_asm:
     andi    t5, a1, 1
     beq     t5, zero, .Lqmul_skip_add0
 
-    # Add 64-bit multiplicand to accumulator.
     add     t1, t1, a0
     sltu    t5, t1, a0
     add     t2, t2, t0
@@ -111,13 +110,10 @@ q_mul_asm:
 
 .Lqmul_skip_add0:
 
-    # Shift multiplicand left by one.
     srli    t6, a0, 31
     slli    a0, a0, 1
     slli    t0, t0, 1
     or      t0, t0, t6
-
-    # Shift multiplier right.
     srli    a1, a1, 1
 
 
@@ -128,7 +124,6 @@ q_mul_asm:
     andi    t5, a1, 1
     beq     t5, zero, .Lqmul_skip_add1
 
-    # Add 64-bit multiplicand to accumulator.
     add     t1, t1, a0
     sltu    t5, t1, a0
     add     t2, t2, t0
@@ -136,13 +131,52 @@ q_mul_asm:
 
 .Lqmul_skip_add1:
 
-    # Shift multiplicand left by one.
     srli    t6, a0, 31
     slli    a0, a0, 1
     slli    t0, t0, 1
     or      t0, t0, t6
+    srli    a1, a1, 1
 
-    # Shift multiplier right.
+
+    # ------------------------------------------------
+    # Third bit
+    # ------------------------------------------------
+
+    andi    t5, a1, 1
+    beq     t5, zero, .Lqmul_skip_add2
+
+    add     t1, t1, a0
+    sltu    t5, t1, a0
+    add     t2, t2, t0
+    add     t2, t2, t5
+
+.Lqmul_skip_add2:
+
+    srli    t6, a0, 31
+    slli    a0, a0, 1
+    slli    t0, t0, 1
+    or      t0, t0, t6
+    srli    a1, a1, 1
+
+
+    # ------------------------------------------------
+    # Fourth bit
+    # ------------------------------------------------
+
+    andi    t5, a1, 1
+    beq     t5, zero, .Lqmul_skip_add3
+
+    add     t1, t1, a0
+    sltu    t5, t1, a0
+    add     t2, t2, t0
+    add     t2, t2, t5
+
+.Lqmul_skip_add3:
+
+    srli    t6, a0, 31
+    slli    a0, a0, 1
+    slli    t0, t0, 1
+    or      t0, t0, t6
     srli    a1, a1, 1
 
 
