@@ -11,7 +11,8 @@
     .text
 
     # ------------------------------------------------
-    # op1: Bitwise Adder - Optimization V1
+    # op1: Bitwise Adder - Optimization V2
+    # Loop Branch Reduction
     # ------------------------------------------------
     .globl  op1_asm
     .type   op1_asm, @function
@@ -20,23 +21,27 @@
 op1_asm:
     addi    t0, zero, 0
 
-.Lop1_loop:
+    # Check whether carry is initially zero.
     beq     a1, zero, .Lop1_done
 
-    # Calculate carry before updating the operands.
+.Lop1_loop:
+    # Calculate carry.
     and     t1, a0, a1
 
-    # Calculate the sum without carry.
+    # Calculate sum without carry.
     xor     a0, a0, a1
 
-    # Shift carry directly into a1, avoiding a register copy.
+    # Shift carry directly into a1.
     slli    a1, t1, 1
 
-    # Count the current iteration.
+    # Count iterations.
     addi    t0, t0, 1
-    jal     zero, .Lop1_loop
+
+    # Continue only when carry is nonzero.
+    bne     a1, zero, .Lop1_loop
 
 .Lop1_done:
+    # Store iteration count.
     sw      t0, 0(a2)
     ret
 
