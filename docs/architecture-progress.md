@@ -1,8 +1,10 @@
 # Implementing and Measuring Four Applications on RV32I
 
 This is the local draft for **one HackMD note covering all four programs**.
-The baseline and quarter-turn compression are committed. Exact radius-five
-completion is the next checkpoint being prepared for review. The other sections will be expanded from their actual source, history, and measured
+The four Rubik checkpoints are implemented, measured, and committed.
+The final Rubik implementation meets the stated correctness, instruction, and
+space limits. The other sections will be expanded from their actual source,
+history, and measured
 results. This draft is not the completed assignment report.
 
 The permitted target is RV32I plus Zicsr for counter reads. Multiplication,
@@ -36,8 +38,10 @@ after their commits exist. A branch URL or a guessed hash is not a substitute.
 Use `make CROSS_COMPILE=/home/ddc/.local/bin/rv32- grade DRIVER_ARGS="--prog rubik"`
 for the Rubik checkpoints. The harness subtracts its counter overhead when
 reporting per-call benchmark costs. rv32emu counter results are emulator
-measurements, not physical hardware timings. Record the compiler and emulator
-revisions alongside the final measurement tables.
+measurements, not physical hardware timings. Final measurements used GCC 14.2.0
+(`rv32-gcc 14.2.0+19`) and rv32emu revision
+`ffb041bab9d1513e5329f25f486378778dceed13`, with
+`-march=rv32i_zicsr -mabi=ilp32`.
 
 ## 1. BFloat16 arithmetic
 
@@ -204,8 +208,8 @@ algorithm, but the baseline still generates too many search candidates.
 | --- | --- | --- |
 | 1. Original C + iterative IDA* assembly port | Establish API behavior and measured bottleneck | Committed as `c12c3c2` |
 | 2. Quarter-turn transition tables | Compose turns to reduce table storage and reuse successor work | Committed as `7c0017a` |
-| 3. Exact radius-five completion | Replace the last five search levels with a small exact lookup | Implemented; official grading and supplementary checks pass |
-| 4. Complete distance-eleven membership table | Skip smaller bounds only when exact membership proves they fail | Not yet applied in this sequence |
+| 3. Exact radius-five completion | Replace the last five search levels with a small exact lookup | Committed as `7107364` |
+| 4. Complete distance-eleven membership table | Skip smaller bounds only when exact membership proves they fail | Committed as `7b864c1` |
 
 Later checkpoints must explain both the memory saved and the extra instructions
 spent composing turns, rather than assuming compression is automatically faster.
@@ -402,11 +406,144 @@ selection. Official grading is reproducible with the command at the start of
 this note. Table regeneration is deterministic and was checked by comparing
 SHA-256 before and after a second generation.
 
-A complete distance-eleven membership set is **not** present in this version.
-It is no longer needed to pass the current limits. A later checkpoint may still
-use it to skip known-unsuccessful lower bounds for the hardest states; that
-tradeoff would need its own measurements. The code excerpt for this checkpoint
-will receive a pinned link after the user approves its commit.
+A complete distance-eleven membership set was **not** present in checkpoint
+three. That version already passes the assignment limits. Its lookup is
+preserved at [7107364](https://github.com/ddc0330/arch2026-progs/blob/7107364beb883f6d5faf09f295d1673595f8f48f/src/rubik/rubik.S#L359-L385):
+
+```asm
+lhu     t1, 0(t0)
+lhu     t2, 2(t0)
+```
+
+These loads obtain the prefix offsets for one permutation and the next one.
+Their difference is that permutation's orientation bucket size. Binary search
+is confined to this half-open interval, avoiding a search over all 12,224
+records. Empty intervals return a miss safely.
+
+### Checkpoint 4: prove which roots can skip smaller bounds
+
+The radius-five version still repeats searches at bounds six through ten for
+roots that can only be solved in eleven moves. The hypothesis is to retain a
+complete exact set of those roots and skip these unsuccessful bounds. This is
+a time-space tradeoff for the hardest states; it is not necessary to fix a
+correctness defect in checkpoint three.
+
+The generator now continues the same host-side BFS until every coordinate is
+visited. Its distance populations are:
+
+```
+0:1  1:9  2:54  3:321  4:1847  5:9992  6:50136
+7:227536  8:870072  9:1887748  10:623800  11:2644
+```
+
+All 3,674,160 states are reached. Only the radius-five records and the 2,644
+keys at distance eleven are emitted; the full distance array is host scratch
+memory and is not part of the target executable. The existing quarter-turn
+composition checks are retained. Radius-five records and both abstract distance
+arrays have the same values as checkpoint three.
+
+A key is `(permutation << 10) | orientation`. Since permutation is at most
+5,039 and orientation at most 728, the two fields do not overlap and the largest
+possible key is 5,160,664. It fits in 23 unsigned bits. Iterating permutation
+then orientation emits strictly increasing keys. Each key occupies an aligned
+32-bit word, adding exactly `2644 * 4 = 10,576` bytes. Binary search needs at
+most twelve comparisons. The target forms keys with a shift and OR, and forms
+word addresses with a shift and addition, all using RV32I instructions.
+
+The root is first checked against the radius-five table, so shallow roots
+never pay for the new lookup. For every other root, a successful membership
+lookup initializes the bound to eleven. A miss leaves the previous initial
+bound unchanged. No lookup occurs in the DFS candidate loop. All prefix search,
+pruning, suffix reconstruction, validation, and output behavior is unchanged.
+The search stack requirement remains 384 bytes including the public wrapper.
+
+Why can this skip preserve optimality? Unit-cost BFS gives exact distances,
+and every key in this complete set has distance eleven. There is therefore no
+solution at any smaller bound for a member. For a nonmember, no bound is skipped
+beyond the already admissible initial lower bound. Membership does not rely on
+any particular grading input, and the full set is computed from the original
+transitions rather than copied from a test vector list.
+
+| Quantity | Radius-five checkpoint | Distance-eleven checkpoint |
+| --- | ---: | ---: |
+| Assembly static data, including alignment | 99,368 bytes | 109,944 bytes |
+| Assembly code | 1,468 bytes | 1,548 bytes |
+| Code plus static data | 100,836 bytes | 111,492 bytes |
+| Assembly benchmark cycles per call | 19,910.8 | 19,971.5 |
+| Instructions for `21345671111111` | 1,230,539 | 251,151 |
+| Maximum over all distance-eleven roots | 3,383,998 | 2,402,538 |
+| Official tests per optimization level | 52 pass / 0 fail | 52 pass / 0 fail |
+| C / assembly benchmark checksum | 29 / 29 | 29 / 29 |
+
+The distance-eleven maximum, still at `54721631111111`, falls by 981,460
+instructions, about 29 percent. The original failing state improves even more
+because much of its previous work was spent proving the smaller bounds fail.
+However, the official benchmark has no distance-eleven root: its measured cost
+increases by about 60.7 cycles per call, or 0.30 percent. The new set lookup is
+extra work for those nonmembers. The official speedup over the best C build
+therefore changes from 5.19x to 5.17x, despite the lower worst-case search cost.
+These are different objectives and both effects must be reported.
+
+Clean grading remains 55/55. The O3 benchmark reports 119,856 assembly cycles
+for six calls with 27 cycles of overhead; C remains at 619,935 cycles under the
+same accounting. Code plus static data is below 131,072 bytes. RV32I/Zicsr,
+footprint, hygiene, and C/assembly consistency checks pass. No tests, header,
+Makefile, original C table file, or C implementation was changed.
+
+The same independent temporary target harness rechecked all 20,013 selected
+states against host BFS distances, replayed their output moves, and enforced
+the instruction budget. Coverage and measured maxima are:
+
+| Depth | Target states checked | Maximum measured instructions |
+| --- | ---: | ---: |
+| 0 | 1 | 757 |
+| 1 | 9 | 900 |
+| 2 | 54 | 1,035 |
+| 3 | 321 | 1,182 |
+| 4 | 1,847 | 1,337 |
+| 5 | 9,992 | 1,485 |
+| 6 | 1,045 | 2,217 |
+| 7 | 1,025 | 6,665 |
+| 8 | 1,025 | 32,082 |
+| 9 | 1,025 | 181,671 |
+| 10 | 1,025 | 1,088,971 |
+| 11 | 2,644 | 2,402,538 |
+
+All checked states pass. Depths zero through five and eleven are exhaustive
+on the target; depths six through ten are samples. The latter roots retain
+the same DFS work bound as checkpoint three. Their one root membership lookup
+has at most twelve comparisons and fits comfortably within the conservative
+4,096-instruction root/setup allowance used there. The resulting all-input
+upper bound of 4,301,056 for those depths still lies below 7,500,000. This is a
+conservative bound, not a claim that the target measured that many instructions.
+Together with the exhaustive deepest-state measurements it verifies the budget
+without representing a full target sweep of all 3,674,160 states.
+
+The extra measurement logs are temporary files under `/tmp/rubik-depth11-*`.
+The only retained host tool is the table generator. A second generation is
+checked for identical SHA-256 output, and ordinary grading requires no Python
+table-generation step. The final root lookup is pinned at
+[7b864c1](https://github.com/ddc0330/arch2026-progs/blob/7b864c15a95ac12b1f9d467913c18024d2c4a90f/src/rubik/rubik.S#L428-L452):
+
+```asm
+slli    a0, s4, 10
+or      a0, a0, s5
+```
+
+These instructions form the exact membership key without multiplication.
+The following binary search compares that key with aligned words. Only an
+exact hit sets the initial bound to eleven; a miss retains the admissible
+initial bound. The table is independently reproducible from the
+[generator at the same commit](https://github.com/ddc0330/arch2026-progs/blob/7b864c15a95ac12b1f9d467913c18024d2c4a90f/tools/rubik/gen_search_tables.py).
+
+The completed Rubik checkpoint history is:
+
+| Version | Pinned commit | Main result |
+| --- | --- | --- |
+| API and original IDA* | `c12c3c22449d556469a87395e9b6f3de0ed90ff4` | Reproduce the depth-eleven budget failure |
+| Quarter-turn compression | `7c0017ae7fbb689fc0f6e7cfdb671d94f1f3250c` | Recover table space |
+| Exact short suffixes | `7107364beb883f6d5faf09f295d1673595f8f48f` | Pass all official Rubik checks |
+| Deepest-state bound selection | `7b864c15a95ac12b1f9d467913c18024d2c4a90f` | Reduce hardest-state search work |
 
 ### Applications and transferable constraints
 
