@@ -10,11 +10,11 @@
     .align  2
 
 bf16_from_f32_asm:
-    srli    t0, a0, 23
-    andi    t0, t0, 255
+    # Drop the sign; exponent 255 makes the shifted word >= 0xff000000.
+    lui     t0, 0xff000
+    slli    t1, a0, 1
 
-    addi    t1, zero, 255
-    beq     t0, t1, .Lfrom_f32_special
+    bgeu    t1, t0, .Lfrom_f32_special
 
     srli    t0, a0, 16
     andi    t1, t0, 1
