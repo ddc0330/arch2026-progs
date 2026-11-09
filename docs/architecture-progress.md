@@ -1,9 +1,8 @@
 # Implementing and Measuring Four Applications on RV32I
 
 This is the local draft for **one HackMD note covering all four programs**.
-The Rubik baseline is committed; quarter-turn compression is the next
-checkpoint being prepared for review. The
-other sections will be expanded from their actual source, history, and measured
+The baseline and quarter-turn compression are committed. Exact radius-five
+completion is the next checkpoint being prepared for review. The other sections will be expanded from their actual source, history, and measured
 results. This draft is not the completed assignment report.
 
 The permitted target is RV32I plus Zicsr for counter reads. Multiplication,
@@ -204,8 +203,8 @@ algorithm, but the baseline still generates too many search candidates.
 | Checkpoint | Hypothesis | Status |
 | --- | --- | --- |
 | 1. Original C + iterative IDA* assembly port | Establish API behavior and measured bottleneck | Committed as `c12c3c2` |
-| 2. Quarter-turn transition tables | Compose turns to reduce table storage and reuse successor work | Implemented and measured; awaiting review |
-| 3. Exact radius-five completion | Replace the last five search levels with a small exact lookup | Not yet applied in this sequence |
+| 2. Quarter-turn transition tables | Compose turns to reduce table storage and reuse successor work | Committed as `7c0017a` |
+| 3. Exact radius-five completion | Replace the last five search levels with a small exact lookup | Implemented; official grading and supplementary checks pass |
 | 4. Complete distance-eleven membership table | Skip smaller bounds only when exact membership proves they fail | Not yet applied in this sequence |
 
 Later checkpoints must explain both the memory saved and the extra instructions
@@ -273,10 +272,141 @@ optimization levels. The reported failing input is not an exhaustive worst-case
 measurement. Exact table-composition checks and the official tests support this
 checkpoint; no new target-side exhaustive search sweep is claimed.
 
-The next experiment can now spend the recovered storage on exact short suffixes
-and reduce the number of generated search candidates. It has not been applied
-to this checkpoint. A pinned excerpt for this change will be added after its
-commit exists.
+The recovered storage makes room for exact short suffixes. This checkpoint
+is preserved at [7c0017a](https://github.com/ddc0330/arch2026-progs/blob/7c0017ae7fbb689fc0f6e7cfdb671d94f1f3250c/src/rubik/rubik.S#L508-L538).
+Those instructions select either the parent or cached coordinates, apply one
+quarter turn, and save the result before pruning. That ordering preserves
+the composition even when the intermediate quarter turn is not expanded.
+
+### Checkpoint 3: replace the last five search levels with an exact lookup
+
+The second checkpoint showed that reducing table size alone increased search
+cost. The next hypothesis is to spend some of that recovered memory on exact
+short suffixes, removing many candidate expansions rather than only reducing
+the cost of each expansion. The quarter-turn layout is retained.
+
+The generator now runs unit-cost BFS from the solved coordinate, stopping at
+radius five. Every move has an inverse in the nine-move set, so the distance
+from solved is also the shortest solution length. The ball contains exactly
+12,224 states: 1, 9, 54, 321, 1,847, and 9,992 at distances zero through five.
+Only that ball is generated for the target; a full-state distance table is
+neither linked nor needed by the ordinary table generator.
+
+For each state, store one move whose successor has distance one smaller. The
+word encoding is `(orientation << 8) | (distance << 4) | move`. Orientations
+need ten bits, distances zero through five need three bits, and moves zero
+through eight need four bits. Move 15 marks solved. These fields do not overlap
+and fit in an unsigned 32-bit record. Orientation comparisons use `record >> 8`.
+Records are grouped by permutation, sorted by orientation within a group.
+A 5,041-entry unsigned 16-bit prefix-offset array identifies each group's
+half-open range. The largest offset is 12,224, well below 65,536. Empty buckets
+are valid. The largest bucket has eleven entries, so lookup needs at most four
+binary comparisons. No division, multiplication, floating-point arithmetic,
+or heap allocation is introduced on the target.
+
+| Added table | Entries and width | Bytes before alignment |
+| --- | --- | ---: |
+| `near_offsets` | 5,041 x uint16 | 10,082 |
+| `near_records` | 12,224 x uint32 | 48,896 |
+
+Roots in this ball are solved directly by following the stored moves. Other
+roots begin at `max(6, perm_dist[p], ori_dist[o])`. At bound `b`, the search
+explores prefixes of length `b-5` and asks whether the resulting coordinate
+has an exact suffix of length at most five. Bounds still increase one at a
+time. Abstract-distance pruning and same-face pruning are retained.
+
+Why does the first successful bound remain optimal? Every shortest path of
+length `b` has a prefix of length `b-5` and a shortest suffix of length five.
+The prefix is enumerated unless an admissible lower bound rules it out, which
+cannot happen for a valid shortest path. If lookup found a suffix shorter than
+five at the first successful bound, its prefix plus suffix would be a shorter
+solution, and an earlier bound would already have succeeded. Roots outside
+the ball cannot have a solution shorter than six. Likewise, a suffix starting
+on the same face as the last prefix move cannot invalidate optimality: merging
+those moves would imply a shorter solution. The lookup need not carry a
+previous-face restriction. Suffix reconstruction strictly decreases distance,
+so it terminates at the solved coordinate.
+
+The assembly search is reorganized to keep current coordinates, remaining
+moves, the next move, and the excluded face in registers. Each 32-byte frame
+saves parent coordinates and the state needed to resume enumeration. Parent
+quarter-turn results survive descent. A leaf performs the exact lookup, then
+writes the prefix's final move and reconstructs the suffix. The search allocates
+320 stack bytes and preserves s0 through s7; the existing public wrapper
+preserves its own saved registers. Total frame allocation is 384 bytes,
+including the wrapper. Input validation, coordinate ranking, C source, and
+output-capacity behavior are unchanged.
+
+| Quantity | Quarter-turn checkpoint | Radius-five checkpoint |
+| --- | ---: | ---: |
+| Assembly static data, including alignment | 40,385 bytes | 99,368 bytes |
+| Assembly code | 1,356 bytes | 1,468 bytes |
+| Code plus static data | 41,741 bytes | 100,836 bytes |
+| Assembly benchmark cycles per call | 140,743.8 | 19,910.8 |
+| Instructions for `21345671111111` | 10,553,435 | 1,230,539 |
+| Official tests per optimization level | 51 pass / 1 fail | 52 pass / 0 fail |
+| C / assembly benchmark checksum | 29 / 29 | 29 / 29 |
+
+Clean official grading is now 55/55. Assembly is 5.19 times as fast as the
+best C build, which remains 103,318.0 cycles per call. The O3 benchmark totals
+are 119,492 cycles for assembly and 619,935 for C, each with 27 cycles of
+harness overhead over six calls. Division after subtracting that overhead
+produces the per-call figures above. Exact lookup makes shallow roots cheap
+and removes the expensive last five search levels for deeper roots. The memory
+increase is 58,983 bytes including alignment and remains below 128 KiB even
+when code is included. Instruction restrictions and hygiene checks pass.
+
+Supplementary target verification uses a separate temporary harness and leaves
+the instructor's tests unchanged. A host BFS computed exact distances for all
+3,674,160 states to select references. The target then checked every state at
+distances zero through five, every one of the 2,644 distance-eleven states,
+and deterministic samples spread over coordinates at distances six through
+ten. Each call checked exact length, independently replayed the move string
+on cubies, and measured retired instructions using the harness counter helper.
+All 20,013 selected states passed.
+
+| Depth | Target states checked | Maximum measured instructions |
+| --- | ---: | ---: |
+| 0 | 1 | 757 |
+| 1 | 9 | 900 |
+| 2 | 54 | 1,035 |
+| 3 | 321 | 1,182 |
+| 4 | 1,847 | 1,337 |
+| 5 | 9,992 | 1,485 |
+| 6 | 1,045 | 2,089 |
+| 7 | 1,025 | 6,537 |
+| 8 | 1,025 | 31,954 |
+| 9 | 1,025 | 181,543 |
+| 10 | 1,025 | 1,088,853 |
+| 11 | 2,644 | 3,383,998 |
+
+The depth-eleven maximum occurs at `54721631111111`. The maxima at depths
+six through ten are sample maxima, not exhaustive target measurements. For
+those remaining roots, even ignoring all pruning and early successes, bounds
+six through ten generate at most
+`9 * sum(L=1..5, sum(i=0..L-1, 6^i)) = 16,785` candidate edges. A conservative
+charge of 256 instructions per candidate covers coordinate updates, a lookup
+with at most four comparisons, and amortized frame/face-skip work; internal
+candidates cost less than that. Reserving another 4,096 instructions for root
+setup, validation, reconstruction, and output gives an upper bound of
+`16,785 * 256 + 4,096 = 4,301,056`. Together with exhaustive radius-five and
+distance-eleven measurements, this establishes margin below 7,500,000 without
+claiming a target sweep of every state. The numerical answer remains exact:
+there is no approximation error in distance or in the returned path.
+
+These supplementary sources and logs are temporary session artifacts, not new
+required tools in the repository. They are kept under `/tmp/rubik-radius5-*`;
+that location is not durable storage. The committed generator retains the
+reproducible radius-five derivation, transition checks, and descending-move
+selection. Official grading is reproducible with the command at the start of
+this note. Table regeneration is deterministic and was checked by comparing
+SHA-256 before and after a second generation.
+
+A complete distance-eleven membership set is **not** present in this version.
+It is no longer needed to pass the current limits. A later checkpoint may still
+use it to skip known-unsuccessful lower bounds for the hardest states; that
+tradeoff would need its own measurements. The code excerpt for this checkpoint
+will receive a pinned link after the user approves its commit.
 
 ### Applications and transferable constraints
 

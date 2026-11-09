@@ -1,8 +1,8 @@
 /*
  * rubik_solve_asm: RV32I implementation of the original 2x2x2 solver.
  *
- * This is a port of the supplied solver.S search core, adapted to the
- * assignment API.  It uses quarter-turn coordinate tables in solver_tables.S.
+ * Iterative deepening with exact radius-five completion. Quarter-turn
+ * transitions and suffix records are derived from the original C tables.
  * No M, C, or floating-point instructions are required.
  *
  * a0 = state (14 ASCII characters plus NUL)
@@ -12,25 +12,6 @@
  */
 
     .option norvc
-    .equ MAX_DEPTH, 11
-    .equ MOVES, 9
-
-    .equ FRAME_P,        0
-    .equ FRAME_O,        2
-    .equ FRAME_NEXT,     4
-    .equ FRAME_PREV,     5
-    .equ FRAME_INCOMING, 6
-    .equ FRAME_TURN_P,   8
-    .equ FRAME_TURN_O,   10
-    .equ FRAME_SIZE,     16
-
-    .equ SAVE_S0,        204
-    .equ SAVE_S1,        208
-    .equ SAVE_S2,        212
-    .equ SAVE_S3,        216
-    .equ SAVE_RA,        220
-    .equ STACK_SIZE,     224
-
     /* Public wrapper's 16-byte-aligned frame. */
     .equ WRAP_S0,        0
     .equ WRAP_S1,        4
@@ -127,7 +108,7 @@ rubik_solve_asm:
     lbu     t0, 14(s0)
     bnez    t0, .Lrubik_invalid
 
-    /* Cache the original table bases used by the legacy search routines. */
+    /* Cache quarter-turn transitions and abstract distance tables. */
     la      s8, perm_next
     la      s9, ori_next
     la      s10, perm_dist
@@ -137,7 +118,7 @@ rubik_solve_asm:
     mv      a0, s0
     call    rank_input
 
-    /* Run the original iterative IDA* search.  Path lives in this frame. */
+    /* Run the optimal prefix search. Path lives in this frame. */
     addi    a2, sp, WRAP_PATH
     call    solve_coordinates
     mv      s3, a0
@@ -371,395 +352,223 @@ rank_input:
     ret
 
     .size rank_input, . - rank_input
-    .globl coordinate_heuristic
-    .type coordinate_heuristic, @function
-
-coordinate_heuristic:
-
-    add     t0, s10, a0
-    lbu     t1, 0(t0)
-
-    add     t0, s11, a1
-    lbu     t2, 0(t0)
-
-
-    /* max(t1, t2) */
-
-    bgeu    t1, t2, .Lheuristic_perm
-
-    mv      a0, t2
-    ret
-
-
-.Lheuristic_perm:
-
-    mv      a0, t1
-    ret
-
-    .size coordinate_heuristic, . - coordinate_heuristic
-    .globl ida_search_iterative
-    .type ida_search_iterative, @function
-
-ida_search_iterative:
-
-    addi    sp, sp, -STACK_SIZE
-
-    sw      s0, SAVE_S0(sp)
-    sw      s1, SAVE_S1(sp)
-    sw      s2, SAVE_S2(sp)
-    sw      s3, SAVE_S3(sp)
-    sw      ra, SAVE_RA(sp)
-
-    mv      s0, sp             /* frames base */
-    mv      s1, a3             /* solution path */
-    mv      s2, a2             /* bound */
-    li      s3, 0              /* depth */
-
-
-    /* frames[0] = {p, o, 0, 3, 0} */
-
-    sh      a0, FRAME_P(s0)
-    sh      a1, FRAME_O(s0)
-    sb      zero, FRAME_NEXT(s0)
-
-    li      t0, 3
-    sb      t0, FRAME_PREV(s0)
-
-    sb      zero, FRAME_INCOMING(s0)
-
-
-    /* solved root */
-
-    or      t0, a0, a1
-    beqz    t0, .Lida_success_root
-
-    /* no moves allowed */
-
-    beqz    s2, .Lida_fail
-
-
-.Lida_loop:
-
-    /*
-     * frame = &frames[depth]
-     *
-     * FRAME_SIZE = 16
-     */
-
-    slli    t0, s3, 4
-    add     t0, s0, t0
-
-
-    /* move = frame->next_move */
-
-    lbu     t1, FRAME_NEXT(t0)
-
-    li      t2, MOVES
-    beq     t1, t2, .Lida_exhausted
-
-
-    /*
-     * face = move / 3
-     *
-     * move 0..2 -> face 0
-     * move 3..5 -> face 1
-     * move 6..8 -> face 2
-     *
-     * Avoid DIV.
-     */
-
-    li      t2, 3
-    bltu    t1, t2, .Lida_face0
-
-    li      t2, 6
-    bltu    t1, t2, .Lida_face1
-
-    li      t2, 2
-    j       .Lida_face_ready
-
-
-.Lida_face0:
-    li      t2, 0
-    j       .Lida_face_ready
-
-
-.Lida_face1:
-    li      t2, 1
-
-
-.Lida_face_ready:
-
-    /*
-     * same-face pruning
-     */
-
-    lbu     t3, FRAME_PREV(t0)
-    beq     t2, t3, .Lida_same_face
-
-
-    /*
-     * Parent resumes from next move when child finishes.
-     */
-
-    addi    t3, t1, 1
-    sb      t3, FRAME_NEXT(t0)
-
-
-    /* Start each face from the parent. Later turns reuse the preceding
-     * quarter-turn result, even if that result was pruned or explored.
-     * The cache belongs to this frame, so descent cannot overwrite it. */
-    slli    t5, t2, 1          /* face * 2 */
-    add     t6, t5, t2         /* face * 3: first move on this face */
-    bne     t1, t6, .Lida_continue_turn
-    lhu     t3, FRAME_P(t0)
-    lhu     t4, FRAME_O(t0)
-    j       .Lida_quarter_turn
-.Lida_continue_turn:
-    lhu     t3, FRAME_TURN_P(t0)
-    lhu     t4, FRAME_TURN_O(t0)
-.Lida_quarter_turn:
-    /* Three uint16 entries per row: offset = coordinate*6 + face*2. */
-    slli    t6, t3, 2
-    slli    a4, t3, 1
-    add     t6, t6, a4
-    add     t6, t6, t5
-    add     t6, t6, s8
-    lhu     t3, 0(t6)
-
-    slli    t6, t4, 2
-    slli    a4, t4, 1
-    add     t6, t6, a4
-    add     t6, t6, t5
-    add     t6, t6, s9
-    lhu     t4, 0(t6)
-
-    /* Store before heuristic pruning so all three turns compose correctly. */
-    sh      t3, FRAME_TURN_P(t0)
-    sh      t4, FRAME_TURN_O(t0)
-
-
-    /*
-     * child_remaining = bound - depth - 1
-     */
-
-    sub     t5, s2, s3
-    addi    t5, t5, -1
-
-
-    /* ------------------------------------------------------------
-     * heuristic pruning
-     *
-     * Instead of explicitly calculating max(),
-     * prune if either component is > child_remaining.
-     * ------------------------------------------------------------ */
-
-    add     t6, s10, t3
-    lbu     a4, 0(t6)
-
-    bltu    t5, a4, .Lida_loop
-
-
-    add     t6, s11, t4
-    lbu     a5, 0(t6)
-
-    bltu    t5, a5, .Lida_loop
-
-
-    /*
-     * solved?
-     */
-
-    or      t6, t3, t4
-    beqz    t6, .Lida_found
-
-
-    /*
-     * Cannot go deeper.
-     */
-
-    beqz    t5, .Lida_loop
-
-
-    /* ------------------------------------------------------------
-     * Push child frame.
-     * ------------------------------------------------------------ */
-
-    addi    s3, s3, 1
-
-    slli    t0, s3, 4
-    add     t0, s0, t0
-
-    sh      t3, FRAME_P(t0)
-    sh      t4, FRAME_O(t0)
-
-    sb      zero, FRAME_NEXT(t0)
-    sb      t2, FRAME_PREV(t0)
-    sb      t1, FRAME_INCOMING(t0)
-
-    j       .Lida_loop
-
-
-.Lida_same_face:
-
-    /*
-     * Skip all three moves belonging to this face.
-     */
-
-    addi    t1, t1, 3
-    sb      t1, FRAME_NEXT(t0)
-
-    j       .Lida_loop
-
-
-.Lida_exhausted:
-
-    /*
-     * All moves at this depth have been tried.
-     */
-
-    beqz    s3, .Lida_fail
-
-    addi    s3, s3, -1
-    j       .Lida_loop
-
-
-.Lida_found:
-
-    /*
-     * frames[1..depth] contain the moves used to descend.
-     *
-     * Copy them into path[0..depth-1].
-     */
-
-    li      t0, 0
-
-
-.Lida_copy_path:
-
-    bgeu    t0, s3, .Lida_copy_last
-
-    addi    t2, t0, 1
-    slli    t2, t2, 4
-    add     t2, s0, t2
-
-    lbu     t3, FRAME_INCOMING(t2)
-
-    add     t4, s1, t0
-    sb      t3, 0(t4)
-
-    addi    t0, t0, 1
-    j       .Lida_copy_path
-
-
-.Lida_copy_last:
-
-    /*
-     * Current move solves the cube.
-     */
-
-    add     t4, s1, s3
-    sb      t1, 0(t4)
-
-    li      a0, 1
-    j       .Lida_return
-
-
-.Lida_success_root:
-
-    li      a0, 1
-    j       .Lida_return
-
-
-.Lida_fail:
-
-    li      a0, 0
-
-
-.Lida_return:
-
-    lw      ra, SAVE_RA(sp)
-    lw      s3, SAVE_S3(sp)
-    lw      s2, SAVE_S2(sp)
-    lw      s1, SAVE_S1(sp)
-    lw      s0, SAVE_S0(sp)
-
-    addi    sp, sp, STACK_SIZE
-
-    ret
-
-    .size ida_search_iterative, . - ida_search_iterative
-    .globl solve_coordinates
-    .type solve_coordinates, @function
-
-solve_coordinates:
-
-    addi    sp, sp, -32
-
-    sw      s0, 12(sp)
-    sw      s1, 16(sp)
-    sw      s2, 20(sp)
-    sw      s3, 24(sp)
-    sw      ra, 28(sp)
-
-    mv      s0, a0             /* start p */
-    mv      s1, a1             /* start o */
-    mv      s2, a2             /* path buffer */
-
-
-    /* Initial bound = heuristic(p, o) */
-
-    mv      a0, s0
-    mv      a1, s1
-    call    coordinate_heuristic
-
-    mv      s3, a0             /* current bound */
-
-
-.Lsolve_bound_loop:
-
-    li      t0, MAX_DEPTH
-
-    /* if bound > MAX_DEPTH -> fail */
-    bltu    t0, s3, .Lsolve_fail
-
-
-    /* ida_search_iterative(p, o, bound, path) */
-
-    mv      a0, s0
-    mv      a1, s1
-    mv      a2, s3
-    mv      a3, s2
-
-    call    ida_search_iterative
-
-    bnez    a0, .Lsolve_found
-
-    addi    s3, s3, 1
-    j       .Lsolve_bound_loop
-
-
-.Lsolve_found:
-
-    /* First successful bound is the optimal solution length. */
-
-    mv      a0, s3
-    j       .Lsolve_return
-
-
-.Lsolve_fail:
-
+/* Lookup exact distance and first solving move for a radius-five state.
+ * a0=p, a1=o; result a0=record, or -1. Only temporaries/a0 are clobbered.
+ * Each permutation's bucket is sorted by orientation. */
+    .type near_lookup, @function
+near_lookup:
+    la      t0, near_offsets
+    slli    t1, a0, 1
+    add     t0, t0, t1
+    lhu     t1, 0(t0)
+    lhu     t2, 2(t0)
+    la      t0, near_records
+.Lnear_loop:
+    bgeu    t1, t2, .Lnear_miss
+    add     t3, t1, t2
+    srli    t3, t3, 1
+    slli    t4, t3, 2
+    add     t4, t0, t4
+    lw      a0, 0(t4)
+    srli    t4, a0, 8
+    beq     t4, a1, .Lnear_return
+    bltu    t4, a1, .Lnear_right
+    mv      t2, t3
+    j       .Lnear_loop
+.Lnear_right:
+    addi    t1, t3, 1
+    j       .Lnear_loop
+.Lnear_miss:
     li      a0, -1
-
-
-.Lsolve_return:
-
-    lw      ra, 28(sp)
-    lw      s3, 24(sp)
-    lw      s2, 20(sp)
-    lw      s1, 16(sp)
-    lw      s0, 12(sp)
-
-    addi    sp, sp, 32
-
+.Lnear_return:
     ret
-    .size solve_coordinates, . - solve_coordinates
+    .size near_lookup, .-near_lookup
+
+/* Iterative DFS, with exact radius-five completion at the leaves.
+ * Frames (32 bytes) save parent coordinates and resume registers. All saved
+ * registers obey the ABI; the deepest stack usage is below 512 bytes.
+ * s0=current frame, s1=path cursor, s2=bound, s3=remaining moves;
+ * s4/s5=successor coordinates, s6=move, s7=excluded face first move.
+ * s8..s11 are the immutable table bases installed by the public wrapper. */
+    .type solve_coordinates, @function
+solve_coordinates:
+    addi    sp, sp, -320
+    sw      s0, 280(sp)
+    sw      s1, 284(sp)
+    sw      s2, 288(sp)
+    sw      s3, 292(sp)
+    sw      s4, 296(sp)
+    sw      s5, 300(sp)
+    sw      s6, 304(sp)
+    sw      s7, 308(sp)
+    sw      ra, 312(sp)
+    mv      s0, sp
+    mv      s1, a2
+    mv      s4, a0
+    mv      s5, a1
+    call    near_lookup
+    bgez    a0, .Lroot_near
+
+    /* Outside radius five, begin at six unless either abstract distance
+     * proves a larger lower bound. */
+    li      s2, 6
+    add     t0, s10, s4
+    lbu     t0, 0(t0)
+    bgeu    s2, t0, .Lbound_ori
+    mv      s2, t0
+.Lbound_ori:
+    add     t0, s11, s5
+    lbu     t0, 0(t0)
+    bgeu    s2, t0, .Lnew_bound
+    mv      s2, t0
+.Lnew_bound:
+    mv      s3, s2
+    li      s6, 0
+    li      s7, 9
+    sw      s4, 0(s0)
+    sw      s5, 4(s0)
+    sw      s7, 12(s0)
+.Lsearch_loop:
+    li      t0, 9
+    beq     s6, t0, .Lpop
+    beq     s6, s7, .Lskip_face
+    /* Determine quarter-turn column; reset coordinates on each new face.
+     * Successive turns of a face compose the same quarter transition. */
+    li      t0, 0
+    li      t1, 3
+    bltu    s6, t1, .Lface_column
+    li      t0, 2
+    li      t1, 6
+    bltu    s6, t1, .Lface_column
+    li      t0, 4
+.Lface_column:
+    srli    t1, t0, 1
+    add     t1, t1, t0         /* first move = column*3/2 */
+    bne     s6, t1, .Lcompose
+    lw      s4, 0(s0)
+    lw      s5, 4(s0)
+.Lcompose:
+    slli    t2, s4, 1
+    slli    t3, s4, 2
+    add     t2, t2, t3         /* p*6 */
+    add     t2, t2, t0
+    add     t2, t2, s8
+    lhu     s4, 0(t2)
+    slli    t2, s5, 1
+    slli    t3, s5, 2
+    add     t2, t2, t3
+    add     t2, t2, t0
+    add     t2, t2, s9
+    lhu     s5, 0(t2)
+    addi    t2, s3, -1
+    li      t3, 5
+    beq     t2, t3, .Lleaf
+    add     t3, s10, s4
+    lbu     t3, 0(t3)
+    bltu    t2, t3, .Lnext_move
+    add     t3, s11, s5
+    lbu     t3, 0(t3)
+    bltu    t2, t3, .Lnext_move
+    /* Save resume state and descend. */
+    sw      s6, 8(s0)
+    sw      s4, 16(s0)
+    sw      s5, 20(s0)
+    sub     t3, s2, s3
+    add     t3, s1, t3
+    sb      s6, 0(t3)
+    addi    s0, s0, 32
+    sw      s4, 0(s0)
+    sw      s5, 4(s0)
+    sw      t1, 12(s0)
+    mv      s7, t1
+    li      s6, 0
+    addi    s3, s3, -1
+    j       .Lsearch_loop
+.Lleaf:
+    mv      a0, s4
+    mv      a1, s5
+    call    near_lookup
+    bltz    a0, .Lnext_move
+    sub     t0, s2, s3
+    add     s1, s1, t0
+    sb      s6, 0(s1)
+    addi    s1, s1, 1
+    j       .Lfinish_near
+.Lnext_move:
+    addi    s6, s6, 1
+    j       .Lsearch_loop
+.Lskip_face:
+    addi    s6, s6, 3
+    j       .Lsearch_loop
+.Lpop:
+    beq     s0, sp, .Lbound_exhausted
+    addi    s0, s0, -32
+    addi    s3, s3, 1
+    lw      s6, 8(s0)
+    lw      s7, 12(s0)
+    lw      s4, 16(s0)
+    lw      s5, 20(s0)
+    j       .Lnext_move
+.Lbound_exhausted:
+    lw      s4, 0(s0)
+    lw      s5, 4(s0)
+    addi    s2, s2, 1
+    li      t0, 11
+    bgeu    t0, s2, .Lnew_bound
+    li      s2, -1
+    j       .Lsearch_return
+.Lroot_near:
+    srli    s2, a0, 4
+    andi    s2, s2, 15
+.Lfinish_near:
+    /* The record stores a move that strictly decreases exact BFS distance.
+     * Repeated bucket lookups reconstruct a shortest suffix, including root
+     * states at distance zero. */
+    andi    t0, a0, 15
+    li      t1, 15
+    beq     t0, t1, .Lsearch_return
+    sb      t0, 0(s1)
+    addi    s1, s1, 1
+    li      t1, 0              /* quarter-table column */
+    li      t2, 3
+    bltu    t0, t2, .Lsuffix_face
+    addi    t0, t0, -3
+    li      t1, 2
+    bltu    t0, t2, .Lsuffix_face
+    addi    t0, t0, -3
+    li      t1, 4
+.Lsuffix_face:
+    addi    t0, t0, 1
+.Lsuffix_turn:
+    slli    t2, s4, 1
+    slli    t3, s4, 2
+    add     t2, t2, t3
+    add     t2, t2, t1
+    add     t2, t2, s8
+    lhu     s4, 0(t2)
+    slli    t2, s5, 1
+    slli    t3, s5, 2
+    add     t2, t2, t3
+    add     t2, t2, t1
+    add     t2, t2, s9
+    lhu     s5, 0(t2)
+    addi    t0, t0, -1
+    bnez    t0, .Lsuffix_turn
+    mv      a0, s4
+    mv      a1, s5
+    call    near_lookup
+    j       .Lfinish_near
+.Lsearch_return:
+    mv      a0, s2
+    lw      ra, 312(sp)
+    lw      s7, 308(sp)
+    lw      s6, 304(sp)
+    lw      s5, 300(sp)
+    lw      s4, 296(sp)
+    lw      s3, 292(sp)
+    lw      s2, 288(sp)
+    lw      s1, 284(sp)
+    lw      s0, 280(sp)
+    addi    sp, sp, 320
+    ret
+    .size solve_coordinates, .-solve_coordinates
