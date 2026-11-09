@@ -1,6 +1,6 @@
 #include "fixed.h"
 
-/* Dummies: every function returns 0. Replace with the real routines. */
+/* Integer operations and Q11.20 products for the assignment contract. */
 uint32_t op1(uint32_t a, uint32_t b, int *n)
 {
     int passes = 0;
