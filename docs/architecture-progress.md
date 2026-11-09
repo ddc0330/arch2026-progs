@@ -1,7 +1,8 @@
 # Implementing and Measuring Four Applications on RV32I
 
 This is the local draft for **one HackMD note covering all four programs**.
-The Rubik baseline is the first checkpoint being prepared for a commit. The
+The Rubik baseline is committed; quarter-turn compression is the next
+checkpoint being prepared for review. The
 other sections will be expanded from their actual source, history, and measured
 results. This draft is not the completed assignment report.
 
@@ -29,9 +30,9 @@ found. They are not presented as a fabricated discovery chronology.
 
 Each short code excerpt in the published note must have a link of the form
 `https://github.com/ddc0330/arch2026-progs/blob/<full-commit-id>/<path>#Lx-Ly`
-followed by an explanation of its role and correctness. The current Rubik work
-has no commit ID yet. Excerpts and their pinned links will be added after each
-user-created commit. A branch URL or a guessed hash is not a substitute.
+followed by an explanation of its role and correctness. The baseline commit is
+`c12c3c22449d556469a87395e9b6f3de0ed90ff4`. Later excerpts will be linked
+after their commits exist. A branch URL or a guessed hash is not a substitute.
 
 Use `make CROSS_COMPILE=/home/ddc/.local/bin/rv32- grade DRIVER_ARGS="--prog rubik"`
 for the Rubik checkpoints. The harness subtracts its counter overhead when
@@ -202,8 +203,8 @@ algorithm, but the baseline still generates too many search candidates.
 
 | Checkpoint | Hypothesis | Status |
 | --- | --- | --- |
-| 1. Original C + iterative IDA* assembly port | Establish API behavior and measured bottleneck | Ready for user review; not committed |
-| 2. Quarter-turn transition tables | Compose turns to reduce table storage and reuse successor work | Not yet applied in this sequence |
+| 1. Original C + iterative IDA* assembly port | Establish API behavior and measured bottleneck | Committed as `c12c3c2` |
+| 2. Quarter-turn transition tables | Compose turns to reduce table storage and reuse successor work | Implemented and measured; awaiting review |
 | 3. Exact radius-five completion | Replace the last five search levels with a small exact lookup | Not yet applied in this sequence |
 | 4. Complete distance-eleven membership table | Skip smaller bounds only when exact membership proves they fail | Not yet applied in this sequence |
 
@@ -213,6 +214,69 @@ Every additional table must have a retained, reproducible derivation from my
 original transitions. Before/after measurements will be added only after each
 checkpoint is executed. The previously tested optimized endpoint is backed up
 outside the commit candidate; its results are not attributed to this baseline.
+
+### Checkpoint 2: make room for a stronger search table
+
+The baseline indexes all nine transitions independently:
+
+```asm
+slli    t5, t3, 4
+slli    t6, t3, 1
+add     t5, t5, t6
+```
+
+[Baseline source at c12c3c2](https://github.com/ddc0330/arch2026-progs/blob/c12c3c22449d556469a87395e9b6f3de0ed90ff4/src/rubik/rubik.S#L518-L520).
+These instructions form `18*p`, the offset of one nine-entry permutation
+row. The orientation table has the same layout. This makes successor lookup
+simple, but the two transition tables consume `5769 * 9 * 2 = 103842` bytes.
+
+Let `Q_f` denote a quarter turn on face `f`. The other two moves on that face
+are exactly `Q_f(Q_f(s))` and `Q_f(Q_f(Q_f(s)))`; four applications return to
+`s`. Keeping only the three quarter-turn columns reduces transition storage
+to `5769 * 3 * 2 = 34614` bytes. This does not change the move metric: the
+search still evaluates each of the three resulting turns as one move.
+
+The host-only generator `tools/rubik/gen_search_tables.py` reads the original
+C tables without modifying them. For every permutation and orientation it
+checks all three compositions on each face against the original nine entries,
+then checks the fourth application returns to the original coordinate. Thus
+all 51,921 original transitions are covered before the extra columns are
+removed. Abstract distance arrays are copied unchanged. The target still uses
+only shifts, addition, and naturally aligned 16-bit loads for row access.
+The generator is retained to make the smaller table reproducible; Python is
+not used during target execution or the ordinary build.
+
+Within one search frame, the first move of each face starts from the parent's
+coordinates. Subsequent turns start from that frame's preceding quarter-turn
+result. Saving this result **before** heuristic pruning matters: a pruned
+quarter turn must still be the input when generating the half turn. Child
+frames must not overwrite a parent's cached result. Frames therefore grow
+from 8 to 16 bytes, and the assembly search's stack allocation grows from
+128 to 224 bytes. Search ordering, heuristic, and shortest-path proof are
+unchanged. API parsing, ranking, and output formatting are unchanged too.
+
+| Quantity | Baseline | Quarter-turn checkpoint |
+| --- | ---: | ---: |
+| Assembly static data, including alignment | 109,611 bytes | 40,385 bytes |
+| Assembly code | 1,332 bytes | 1,356 bytes |
+| Assembly benchmark cycles per call | 130,413.3 | 140,743.8 |
+| Instructions for `21345671111111`, O3 caller | 9,773,561 | 10,553,435 |
+| Official tests per optimization level | 51 pass / 1 fail | 51 pass / 1 fail |
+| C / assembly benchmark checksum | 29 / 29 | 29 / 29 |
+
+The saving is 69,226 static bytes including alignment. The extra first-turn
+selection and cached-coordinate stores increase instruction and cycle counts;
+this checkpoint is a storage tradeoff, not a speed improvement. The failing
+test remains `rubik_asm_depth11` because of its instruction budget. Instruction
+restrictions, footprint, hygiene, and the other tests pass at all four compiler
+optimization levels. The reported failing input is not an exhaustive worst-case
+measurement. Exact table-composition checks and the official tests support this
+checkpoint; no new target-side exhaustive search sweep is claimed.
+
+The next experiment can now spend the recovered storage on exact short suffixes
+and reduce the number of generated search candidates. It has not been applied
+to this checkpoint. A pinned excerpt for this change will be added after its
+commit exists.
 
 ### Applications and transferable constraints
 

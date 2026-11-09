@@ -2,7 +2,7 @@
  * rubik_solve_asm: RV32I implementation of the original 2x2x2 solver.
  *
  * This is a port of the supplied solver.S search core, adapted to the
- * assignment API.  It uses the original coordinate tables in solver_tables.S.
+ * assignment API.  It uses quarter-turn coordinate tables in solver_tables.S.
  * No M, C, or floating-point instructions are required.
  *
  * a0 = state (14 ASCII characters plus NUL)
@@ -20,14 +20,16 @@
     .equ FRAME_NEXT,     4
     .equ FRAME_PREV,     5
     .equ FRAME_INCOMING, 6
-    .equ FRAME_SIZE,     8
+    .equ FRAME_TURN_P,   8
+    .equ FRAME_TURN_O,   10
+    .equ FRAME_SIZE,     16
 
-    .equ SAVE_S0,        108
-    .equ SAVE_S1,        112
-    .equ SAVE_S2,        116
-    .equ SAVE_S3,        120
-    .equ SAVE_RA,        124
-    .equ STACK_SIZE,     128
+    .equ SAVE_S0,        204
+    .equ SAVE_S1,        208
+    .equ SAVE_S2,        212
+    .equ SAVE_S3,        216
+    .equ SAVE_RA,        220
+    .equ STACK_SIZE,     224
 
     /* Public wrapper's 16-byte-aligned frame. */
     .equ WRAP_S0,        0
@@ -441,10 +443,10 @@ ida_search_iterative:
     /*
      * frame = &frames[depth]
      *
-     * FRAME_SIZE = 8
+     * FRAME_SIZE = 16
      */
 
-    slli    t0, s3, 3
+    slli    t0, s3, 4
     add     t0, s0, t0
 
 
@@ -503,44 +505,37 @@ ida_search_iterative:
     sb      t3, FRAME_NEXT(t0)
 
 
-    /* current p / o */
+    /* Start each face from the parent. Later turns reuse the preceding
+     * quarter-turn result, even if that result was pruned or explored.
+     * The cache belongs to this frame, so descent cannot overwrite it. */
+    slli    t5, t2, 1          /* face * 2 */
+    add     t6, t5, t2         /* face * 3: first move on this face */
+    bne     t1, t6, .Lida_continue_turn
+    lhu     t3, FRAME_P(t0)
+    lhu     t4, FRAME_O(t0)
+    j       .Lida_quarter_turn
+.Lida_continue_turn:
+    lhu     t3, FRAME_TURN_P(t0)
+    lhu     t4, FRAME_TURN_O(t0)
+.Lida_quarter_turn:
+    /* Three uint16 entries per row: offset = coordinate*6 + face*2. */
+    slli    t6, t3, 2
+    slli    a4, t3, 1
+    add     t6, t6, a4
+    add     t6, t6, t5
+    add     t6, t6, s8
+    lhu     t3, 0(t6)
 
-    lhu     t3, FRAME_P(t0)    /* p */
-    lhu     t4, FRAME_O(t0)    /* o */
+    slli    t6, t4, 2
+    slli    a4, t4, 1
+    add     t6, t6, a4
+    add     t6, t6, t5
+    add     t6, t6, s9
+    lhu     t4, 0(t6)
 
-
-    /* ------------------------------------------------------------
-     * next_p = perm_next[p][move]
-     *
-     * byte offset = p * 18 + move * 2
-     * ------------------------------------------------------------ */
-
-    slli    t5, t3, 4          /* p * 16 */
-    slli    t6, t3, 1          /* p * 2 */
-    add     t5, t5, t6         /* p * 18 */
-
-    slli    t6, t1, 1
-    add     t5, t5, t6
-
-    add     t5, t5, s8
-
-    lhu     t3, 0(t5)          /* next_p */
-
-
-    /* ------------------------------------------------------------
-     * next_o = ori_next[o][move]
-     * ------------------------------------------------------------ */
-
-    slli    t5, t4, 4
-    slli    t6, t4, 1
-    add     t5, t5, t6         /* o * 18 */
-
-    slli    t6, t1, 1
-    add     t5, t5, t6
-
-    add     t5, t5, s9
-
-    lhu     t4, 0(t5)          /* next_o */
+    /* Store before heuristic pruning so all three turns compose correctly. */
+    sh      t3, FRAME_TURN_P(t0)
+    sh      t4, FRAME_TURN_O(t0)
 
 
     /*
@@ -591,7 +586,7 @@ ida_search_iterative:
 
     addi    s3, s3, 1
 
-    slli    t0, s3, 3
+    slli    t0, s3, 4
     add     t0, s0, t0
 
     sh      t3, FRAME_P(t0)
@@ -644,7 +639,7 @@ ida_search_iterative:
     bgeu    t0, s3, .Lida_copy_last
 
     addi    t2, t0, 1
-    slli    t2, t2, 3
+    slli    t2, t2, 4
     add     t2, s0, t2
 
     lbu     t3, FRAME_INCOMING(t2)
