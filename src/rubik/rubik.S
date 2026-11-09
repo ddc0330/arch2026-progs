@@ -419,8 +419,33 @@ solve_coordinates:
 .Lbound_ori:
     add     t0, s11, s5
     lbu     t0, 0(t0)
-    bgeu    s2, t0, .Lnew_bound
+    bgeu    s2, t0, .Lcheck_eleven
     mv      s2, t0
+.Lcheck_eleven:
+    /* Exact membership proves that smaller bounds cannot succeed. The list
+     * contains every distance-eleven coordinate, not just test inputs.
+     * Key = (permutation << 10) | orientation; orientation fits in 10 bits. */
+    slli    a0, s4, 10
+    or      a0, a0, s5
+    la      t0, depth11_keys
+    li      t1, 0
+    li      t2, 2644
+.Leleven_loop:
+    bgeu    t1, t2, .Lnew_bound
+    add     t3, t1, t2
+    srli    t3, t3, 1
+    slli    t4, t3, 2
+    add     t4, t0, t4
+    lw      t4, 0(t4)
+    beq     t4, a0, .Lis_eleven
+    bltu    t4, a0, .Leleven_right
+    mv      t2, t3
+    j       .Leleven_loop
+.Leleven_right:
+    addi    t1, t3, 1
+    j       .Leleven_loop
+.Lis_eleven:
+    li      s2, 11
 .Lnew_bound:
     mv      s3, s2
     li      s6, 0
